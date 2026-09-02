@@ -3,12 +3,38 @@ import sys
 import html
 import re
 import asyncio
+import threading
 from io import BytesIO
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import importlib.abc
 import importlib.util
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 
+# 1. Servidor HTTP leve para manter o Render / UptimeRobot ativo 24/7 sem dormir
+def start_health_server():
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Bot Telegram Online 24/7")
+
+        def log_message(self, format, *args):
+            pass  # Silencia logs de requisições de ping
+
+    try:
+        port = int(os.environ.get("PORT", 8080))
+        server = HTTPServer(("0.0.0.0", port), HealthHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        print(f"[Render Healthcheck] Servidor HTTP ativo na porta {port}")
+    except Exception as e:
+        print(f"[Render Healthcheck] Aviso: {e}")
+
+start_health_server()
+
+# 2. Localizador de bytecode para os módulos compilados
 class PycacheFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):
         if path is None or '' in path or base_dir in (path or []):
@@ -19,7 +45,7 @@ class PycacheFinder(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, PycacheFinder())
 
-# Carrega o módulo base compilado
+# 3. Carrega o módulo base compilado
 spec = importlib.util.spec_from_file_location('bot_base', os.path.join(base_dir, '__pycache__/bot.cpython-314.pyc'))
 mod = importlib.util.module_from_spec(spec)
 sys.modules['bot_base'] = mod
@@ -28,17 +54,17 @@ spec.loader.exec_module(mod)
 # Salva handlers originais
 orig_button_handler = mod.button_handler
 
-# 1. get_delete_markup sem botão de site
+# 4. get_delete_markup sem botão de site
 def custom_get_delete_markup(user_id, text=None, report_url=None, token=None):
     buttons = []
-    # Removido completamente o link/botão para o site web
+    # Removido link do site
     if token:
         buttons.append([mod.InlineKeyboardButton("📁 Baixar TXT Resultado", callback_data=f"dltxt_{user_id}_{token}")])
     buttons.append([mod.InlineKeyboardButton("📋 Copiar Dados", callback_data=f"copiar_{user_id}")])
     buttons.append([mod.InlineKeyboardButton("🗑️ Apagar", callback_data=f"apagar_{user_id}")])
     return mod.InlineKeyboardMarkup(buttons)
 
-# 2. send_result_with_txt enviando direto no PV e com botão de abrir no PV no grupo
+# 5. send_result_with_txt enviando direto no PV e com botão de abrir no PV no grupo
 async def custom_send_result_with_txt(update, text, title, user_id, report_url=None, raw_data=None, query_value=None, context=None):
     if not text:
         text = "📌 Nenhum dado encontrado."
@@ -76,7 +102,7 @@ async def custom_send_result_with_txt(update, text, title, user_id, report_url=N
         clean_text = str(text).strip().replace("<blockquote>", "").replace("</blockquote>", "")
         markup_pv = custom_get_delete_markup(user_id, clean_text, report_url=None, token=token)
 
-        # Envia foto no PV
+        # Envia fotos no PV
         if len(todas_fotos) == 1:
             try:
                 msg_p = await bot_instance.send_photo(
@@ -208,7 +234,7 @@ async def custom_send_result_with_txt(update, text, title, user_id, report_url=N
             except Exception as e:
                 mod.logger.error(f"Erro ao enviar recibo no grupo: {e}")
 
-# 3. button_handler com bloqueio exclusivo para terceiros e envio seguro no PV
+# 6. button_handler com bloqueio exclusivo para terceiros e envio seguro no PV
 async def custom_button_handler(update, context):
     query = update.callback_query
     data = query.data
@@ -304,7 +330,7 @@ async def custom_button_handler(update, context):
 
     return await orig_button_handler(update, context)
 
-# Aplica as alterações no módulo
+# 7. Aplica overrides no bot
 mod.get_delete_markup = custom_get_delete_markup
 mod.send_result_with_txt = custom_send_result_with_txt
 mod.button_handler = custom_button_handler
