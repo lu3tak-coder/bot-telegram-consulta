@@ -4,12 +4,18 @@ import html
 import re
 import asyncio
 import threading
+import time
 from io import BytesIO
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.request import urlopen
 import importlib.abc
 import importlib.util
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Configure o provedor antes que o modulo compilado importe tconect_api.
+os.environ.setdefault("TCONECT_BASE_URL", "http://node.tconect.xyz:1116")
+os.environ.setdefault("TCONECT_API_KEY", "DataVip")
 
 # 1. Servidor HTTP leve para manter o Render / UptimeRobot ativo 24/7 sem dormir
 def start_health_server():
@@ -33,6 +39,28 @@ def start_health_server():
         print(f"[Render Healthcheck] Aviso: {e}")
 
 start_health_server()
+
+def start_keep_alive():
+    url = os.environ.get("KEEP_ALIVE_URL")
+    if not url:
+        return
+
+    interval = max(1, int(os.environ.get("KEEP_ALIVE_INTERVAL", "300")))
+
+    def ping():
+        while True:
+            time.sleep(interval)
+            try:
+                with urlopen(url, timeout=30) as response:
+                    response.read(1)
+            except Exception as e:
+                print(f"[Render Keep-Alive] Aviso: {e}")
+
+    thread = threading.Thread(target=ping, name="render-keep-alive", daemon=True)
+    thread.start()
+    print(f"[Render Keep-Alive] Ping ativo a cada {interval}s")
+
+start_keep_alive()
 
 # 2. Localizador de bytecode para os módulos compilados
 class PycacheFinder(importlib.abc.MetaPathFinder):
