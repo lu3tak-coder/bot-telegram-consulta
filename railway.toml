@@ -1,0 +1,4 @@
+[deploy]
+  startCommand = "bash start.sh"
+  restartPolicyType = "on_failure"
+

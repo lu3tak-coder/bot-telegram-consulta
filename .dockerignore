@@ -1,0 +1,17 @@
+*.log
+venv
+.venv
+resultado_cpfs_organizado.txt
+consultcenter_*.html
+!requirements.txt
+minhas apis/
+test_*.py
+_test_*.py
+debug_*.py
+explore_*.py
+_find_*.py
+_dump_*.py
+test_out.txt
+photo_*.jpg
+TODO.md
+run_local.ps1

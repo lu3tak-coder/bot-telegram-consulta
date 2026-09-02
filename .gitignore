@@ -1,0 +1,11 @@
+
+.env
+.env.*
+venv/
+.pytest_cache/
+*.db
+*.sqlite
+*.sqlite3
+reports_store.db
+radar_token.txt
+data/
