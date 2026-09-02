@@ -79,6 +79,11 @@ mod = importlib.util.module_from_spec(spec)
 sys.modules['bot_base'] = mod
 spec.loader.exec_module(mod)
 
+# O bytecode e carregado de __pycache__, mas os banners ficam na raiz.
+mod.BANNER = os.path.join(base_dir, "banner 1.jpg")
+mod.BANNER2 = mod.BANNER
+mod.BANNER_CONSULTA = os.path.join(base_dir, "BANNER CONSULTA.jpg")
+
 # Salva handlers originais
 orig_button_handler = mod.button_handler
 
@@ -203,8 +208,9 @@ async def custom_send_result_with_txt(update, text, title, user_id, report_url=N
             f"👁️ <i>(Toque na foto para visualizar)</i>"
         )
 
+        bot_username = (getattr(bot_instance, "username", "") or "imperialsearchconsultasbot").lstrip("@")
         buttons_group = [
-            [mod.PrimaryButton("📩 Ver Resultado no PV", callback_data=f"openpv_{user_id}_{token}")],
+            [mod.PrimaryButton("📩 Ver Resultado no PV", url=f"https://t.me/{bot_username}")],
             [mod.SuccessButton("📁 Baixar TXT Resultado", callback_data=f"dltxt_{user_id}_{token}")],
             [mod.DangerButton("🗑️ Apagar", callback_data=f"apagar_{user_id}")]
         ]
