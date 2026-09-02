@@ -2,6 +2,9 @@ services:
   - type: web
     name: bot-telegram-consulta
     runtime: docker
+    repo: https://github.com/lu3tak-coder/bot-telegram-consulta.git
+    branch: main
+    autoDeployTrigger: commit
     plan: free
     region: oregon
     healthCheckPath: /
