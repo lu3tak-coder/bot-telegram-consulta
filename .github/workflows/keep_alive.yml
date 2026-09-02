@@ -1,0 +1,16 @@
+name: Keep Render Bot Alive 24/7
+
+on:
+  schedule:
+    # Executa a cada 5 minutos 24 horas por dia
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Render Service
+        run: |
+          echo "Pinging https://bot-telegram-consulta.onrender.com"
+          curl -s -f "https://bot-telegram-consulta.onrender.com" || echo "Ping finalizado"
