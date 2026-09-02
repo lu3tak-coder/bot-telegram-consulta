@@ -41,7 +41,7 @@ def start_health_server():
 start_health_server()
 
 def start_keep_alive():
-    url = os.environ.get("KEEP_ALIVE_URL")
+    url = os.environ.get("KEEP_ALIVE_URL") or os.environ.get("RENDER_EXTERNAL_URL")
     if not url:
         return
 
