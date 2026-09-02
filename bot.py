@@ -12,6 +12,7 @@ import importlib.abc
 import importlib.util
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
+provider_status = {"consultcenter": "pending"}
 
 # Configure o provedor antes que o modulo compilado importe tconect_api.
 os.environ.setdefault("TCONECT_BASE_URL", "http://node.tconect.xyz:1116")
@@ -23,6 +24,8 @@ def start_health_server():
         def do_GET(self):
             self.send_response(200)
             self.send_header("Content-type", "text/plain; charset=utf-8")
+            self.send_header("X-Bot-Commit", os.environ.get("RENDER_GIT_COMMIT", "local")[:7])
+            self.send_header("X-ConsultCenter-Status", provider_status["consultcenter"])
             self.end_headers()
             self.wfile.write(b"Bot Telegram Online 24/7")
 
@@ -86,6 +89,50 @@ mod.BANNER_CONSULTA = os.path.join(base_dir, "BANNER CONSULTA.jpg")
 
 # Salva handlers originais
 orig_button_handler = mod.button_handler
+orig_post_init = mod.post_init
+
+consultcenter = sys.modules["consultcenter_api"]
+consultcenter_retry_lock = asyncio.Lock()
+
+def add_consultcenter_retry(function_name):
+    original = getattr(consultcenter, function_name)
+
+    async def with_login_retry(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        error = str(result.get("erro", "")).lower() if isinstance(result, dict) else ""
+        if not any(term in error for term in ("login", "sessao", "autentica")):
+            return result
+
+        async with consultcenter_retry_lock:
+            await consultcenter.reset_client()
+            login_result = await consultcenter.login_consultcenter(force=True)
+            if not login_result.get("sucesso"):
+                provider_status["consultcenter"] = "error"
+                return result
+
+            provider_status["consultcenter"] = "ok"
+            return await original(*args, **kwargs)
+
+    setattr(consultcenter, function_name, with_login_retry)
+    setattr(mod, function_name, with_login_retry)
+
+for consultcenter_function in (
+    "consultar_cpf_consultcenter",
+    "consultar_telefone_consultcenter",
+    "consultar_cnpj_consultcenter",
+    "consultar_nome_consultcenter",
+    "consultar_imoveis_cpf_consultcenter",
+):
+    add_consultcenter_retry(consultcenter_function)
+
+async def custom_post_init(application):
+    await orig_post_init(application)
+    try:
+        login_result = await consultcenter.login_consultcenter(force=True)
+        provider_status["consultcenter"] = "ok" if login_result.get("sucesso") else "error"
+    except Exception as e:
+        provider_status["consultcenter"] = "error"
+        mod.logger.warning(f"Falha ao iniciar sessao ConsultCenter: {e}")
 
 # 4. get_delete_markup sem botão de site
 def custom_get_delete_markup(user_id, text=None, report_url=None, token=None):
@@ -368,6 +415,7 @@ async def custom_button_handler(update, context):
 mod.get_delete_markup = custom_get_delete_markup
 mod.send_result_with_txt = custom_send_result_with_txt
 mod.button_handler = custom_button_handler
+mod.post_init = custom_post_init
 
 if __name__ == '__main__':
     mod.main()
