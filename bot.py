@@ -5,6 +5,7 @@ import re
 import asyncio
 import threading
 import time
+import hashlib
 from io import BytesIO
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.request import urlopen
@@ -15,8 +16,8 @@ base_dir = os.path.dirname(os.path.abspath(__file__))
 provider_status = {"consultcenter": "pending"}
 
 # Configure o provedor antes que o modulo compilado importe tconect_api.
-os.environ.setdefault("TCONECT_BASE_URL", "http://node.tconect.xyz:1116")
-os.environ.setdefault("TCONECT_API_KEY", "DataVip")
+os.environ["TCONECT_BASE_URL"] = os.environ.get("TCONECT_BASE_URL", "http://node.tconect.xyz:1116")
+os.environ["TCONECT_API_KEY"] = os.environ.get("TCONECT_API_KEY", "DataVip")
 
 # 1. Servidor HTTP leve para manter o Render / UptimeRobot ativo 24/7 sem dormir
 def start_health_server():
@@ -68,6 +69,8 @@ start_keep_alive()
 # 2. Localizador de bytecode para os módulos compilados
 class PycacheFinder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):
+        if fullname in ('bot', 'bot_base'):
+            return None
         if path is None or '' in path or base_dir in (path or []):
             pyc_path = os.path.join(base_dir, '__pycache__', f'{fullname}.cpython-314.pyc')
             if os.path.exists(pyc_path):
@@ -77,7 +80,10 @@ class PycacheFinder(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, PycacheFinder())
 
 # 3. Carrega o módulo base compilado
-spec = importlib.util.spec_from_file_location('bot_base', os.path.join(base_dir, '__pycache__/bot.cpython-314.pyc'))
+bot_compiled_path = os.path.join(base_dir, '__pycache__/bot_compiled.cpython-314.pyc')
+if not os.path.exists(bot_compiled_path):
+    bot_compiled_path = os.path.join(base_dir, '__pycache__/bot.cpython-314.pyc')
+spec = importlib.util.spec_from_file_location('bot_base', bot_compiled_path)
 mod = importlib.util.module_from_spec(spec)
 sys.modules['bot_base'] = mod
 spec.loader.exec_module(mod)
@@ -411,11 +417,110 @@ async def custom_button_handler(update, context):
 
     return await orig_button_handler(update, context)
 
+# 6. Override para busca unificada de fotos com suporte a tconect Foto Nacional (DataVip)
+async def custom_buscar_todas_fotos_unificada(cpf):
+    cpf_clean = re.sub(r'\D', '', str(cpf or ''))
+    if not cpf_clean:
+        return [], {}
+    fotos_list = []
+    seen_hashes = set()
+    info_merged = {}
+
+    def add_foto(img_bytes, origem):
+        if not img_bytes or len(img_bytes) < 200:
+            return
+        h = hashlib.md5(img_bytes).hexdigest()
+        if h in seen_hashes:
+            return
+        seen_hashes.add(h)
+        fotos_list.append((img_bytes, origem))
+
+    async def _fetch_tconect():
+        try:
+            import tconect_api
+            return await asyncio.wait_for(
+                asyncio.to_thread(tconect_api.consultar_tconect_foto_nacional, cpf_clean),
+                timeout=25.0
+            )
+        except Exception as e:
+            mod.logger.warning(f"Erro ao buscar foto tconect: {e}")
+            return None, {}
+
+    async def _fetch_apisbrasil():
+        try:
+            return await asyncio.wait_for(
+                mod.consultar_todas_fotos_apisbrasilpro_async(cpf_clean),
+                timeout=12.0
+            )
+        except Exception:
+            return []
+
+    async def _fetch_sisp():
+        try:
+            coro = mod.buscar_foto_sisp(cpf_clean)
+            if asyncio.iscoroutine(coro):
+                return await asyncio.wait_for(coro, timeout=8.0)
+            return coro
+        except Exception:
+            return None, {}
+
+    async def _fetch_pmse():
+        try:
+            coro = mod.buscar_foto_pmse(cpf_clean)
+            if asyncio.iscoroutine(coro):
+                return await asyncio.wait_for(coro, timeout=8.0)
+            return coro
+        except Exception:
+            return None, {}
+
+    tc_res, ap_res, sisp_res, pmse_res = await asyncio.gather(
+        _fetch_tconect(),
+        _fetch_apisbrasil(),
+        _fetch_sisp(),
+        _fetch_pmse()
+    )
+
+    if tc_res and isinstance(tc_res, tuple) and tc_res[0]:
+        img_bytes, info = tc_res
+        add_foto(img_bytes, info.get('origem', 'Base Nacional Foto') if isinstance(info, dict) else 'Base Nacional Foto')
+        if isinstance(info, dict):
+            info_merged.update(info)
+
+    if ap_res and isinstance(ap_res, list):
+        for item in ap_res:
+            if isinstance(item, tuple) and len(item) == 2:
+                img_bytes, info = item
+                add_foto(img_bytes, info.get('FONTE', 'ApisBrasilPro') if isinstance(info, dict) else 'ApisBrasilPro')
+                if isinstance(info, dict):
+                    info_merged.update(info)
+
+    if sisp_res and isinstance(sisp_res, tuple) and sisp_res[0]:
+        img_bytes, info = sisp_res
+        add_foto(img_bytes, 'SISP Portal')
+        if isinstance(info, dict):
+            info_merged.update(info)
+
+    if pmse_res and isinstance(pmse_res, tuple) and pmse_res[0]:
+        img_bytes, info = pmse_res
+        add_foto(img_bytes, 'Portal PMSE')
+        if isinstance(info, dict):
+            info_merged.update(info)
+
+    return fotos_list, info_merged
+
+async def custom_buscar_foto_unificada(cpf):
+    fotos, info = await custom_buscar_todas_fotos_unificada(cpf)
+    if fotos:
+        return fotos[0][0], info
+    return None, info
+
 # 7. Aplica overrides no bot
 mod.get_delete_markup = custom_get_delete_markup
 mod.send_result_with_txt = custom_send_result_with_txt
 mod.button_handler = custom_button_handler
 mod.post_init = custom_post_init
+mod.buscar_todas_fotos_unificada = custom_buscar_todas_fotos_unificada
+mod.buscar_foto_unificada = custom_buscar_foto_unificada
 
 if __name__ == '__main__':
     mod.main()
