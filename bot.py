@@ -593,26 +593,34 @@ async def custom_merge_cpf_local(cpf):
 
     return merged
 
+async def custom_check_access_and_chat(update, context, user_id=None):
+    # Permite consultas em qualquer chat (privado ou grupo)
+    return True
+
 async def custom_cmd_foto(update, context):
     user_id = update.effective_user.id if update.effective_user else None
     if not user_id:
         return
-    if not await mod.check_access_and_chat(update, context, user_id=user_id):
-        return
 
-    text = update.message.text if update.message and update.message.text else ""
-    parts = text.split()
-    if len(parts) < 2:
-        mod.user_states[user_id] = "btn_foto"
-        msg = await mod.send_chat_msg(context, update, mod.wrap_quote("Digite o CPF para buscar FOTO:"), parse_mode="HTML")
-        mod.auto_delete(msg, delay=60)
-        return
+    text = (update.message.text or "").strip() if update.message else ""
+    parts = text.split(maxsplit=1)
+    cpf_arg = ""
+    if len(parts) > 1 and parts[0].startswith("/foto"):
+        cpf_arg = parts[1].strip()
+    elif not text.startswith("/"):
+        cpf_arg = text
+    elif getattr(context, "args", None):
+        cpf_arg = context.args[0].strip()
 
-    cpf_raw = parts[1].strip()
-    cpf = re.sub(r"\D", "", cpf_raw)
+    cpf = re.sub(r"\D", "", cpf_arg)
     if len(cpf) != 11:
-        msg = await mod.send_chat_msg(context, update, mod.wrap_quote("⚠️ CPF inválido. Digite um CPF válido com até 11 dígitos."), parse_mode="HTML")
-        mod.auto_delete(msg, delay=15)
+        if not cpf_arg:
+            mod.user_states[user_id] = "btn_foto"
+            msg = await mod.send_chat_msg(context, update, mod.wrap_quote("Digite o CPF para buscar FOTO:"), parse_mode="HTML")
+            mod.auto_delete(msg, delay=60)
+        else:
+            msg = await mod.send_chat_msg(context, update, mod.wrap_quote("⚠️ CPF inválido. Digite um CPF válido com até 11 dígitos."), parse_mode="HTML")
+            mod.auto_delete(msg, delay=15)
         return
 
     msg_wait = await mod.send_loading_message(context, update=update, text="🔍 Buscando foto... aguarde.")
@@ -655,6 +663,15 @@ async def custom_cmd_foto(update, context):
         mod.auto_delete(msg, delay=15)
         await mod.delete_msg(msg_wait)
 
+orig_handle_message = mod.handle_message
+
+async def custom_handle_message(update, context):
+    user_id = update.effective_user.id if update.effective_user else None
+    if user_id and mod.user_states.get(user_id) == "btn_foto":
+        mod.user_states.pop(user_id, None)
+        return await custom_cmd_foto(update, context)
+    return await orig_handle_message(update, context)
+
 # 7. Aplica overrides no bot
 mod.get_delete_markup = custom_get_delete_markup
 mod.send_result_with_txt = custom_send_result_with_txt
@@ -664,6 +681,8 @@ mod.buscar_todas_fotos_unificada = custom_buscar_todas_fotos_unificada
 mod.buscar_foto_unificada = custom_buscar_foto_unificada
 mod.merge_cpf_local = custom_merge_cpf_local
 mod.cmd_foto = custom_cmd_foto
+mod.handle_message = custom_handle_message
+mod.check_access_and_chat = custom_check_access_and_chat
 
 if __name__ == '__main__':
     mod.main()
