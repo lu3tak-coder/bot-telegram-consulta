@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 import hashlib
+import base64
 from io import BytesIO
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.request import urlopen
@@ -150,6 +151,68 @@ def custom_get_delete_markup(user_id, text=None, report_url=None, token=None):
     buttons.append([mod.InlineKeyboardButton("🗑️ Apagar", callback_data=f"apagar_{user_id}")])
     return mod.InlineKeyboardMarkup(buttons)
 
+def extract_photos_from_raw_data(raw_data):
+    todas_fotos = []
+    if not isinstance(raw_data, dict):
+        return todas_fotos
+
+    if raw_data.get("_TODAS_FOTOS_BYTES"):
+        lbls = raw_data.get("_TODAS_FOTOS_LABELS", [])
+        for idx_f, fb in enumerate(raw_data["_TODAS_FOTOS_BYTES"]):
+            lbl = lbls[idx_f] if idx_f < len(lbls) else f"Foto {idx_f+1}"
+            todas_fotos.append((fb, lbl))
+        return todas_fotos
+
+    if raw_data.get("_FOTO_BYTES"):
+        return [(raw_data["_FOTO_BYTES"], "Foto")]
+
+    if raw_data.get("_TODAS_FOTOS_BASE64"):
+        lbls = raw_data.get("_TODAS_FOTOS_LABELS", [])
+        for idx_f, b64_str in enumerate(raw_data["_TODAS_FOTOS_BASE64"]):
+            try:
+                b = base64.b64decode(b64_str)
+                lbl = lbls[idx_f] if idx_f < len(lbls) else f"Foto {idx_f+1}"
+                todas_fotos.append((b, lbl))
+            except Exception:
+                pass
+        if todas_fotos:
+            return todas_fotos
+
+    if raw_data.get("_FOTO_BASE64"):
+        try:
+            return [(base64.b64decode(raw_data["_FOTO_BASE64"]), "Foto")]
+        except Exception:
+            pass
+
+    for item in raw_data.values():
+        if isinstance(item, dict):
+            if item.get("_TODAS_FOTOS_BYTES"):
+                lbls = item.get("_TODAS_FOTOS_LABELS", [])
+                for idx_f, fb in enumerate(item["_TODAS_FOTOS_BYTES"]):
+                    lbl = lbls[idx_f] if idx_f < len(lbls) else f"Foto {idx_f+1}"
+                    todas_fotos.append((fb, lbl))
+                return todas_fotos
+            if item.get("_FOTO_BYTES"):
+                return [(item["_FOTO_BYTES"], "Foto")]
+            if item.get("_TODAS_FOTOS_BASE64"):
+                lbls = item.get("_TODAS_FOTOS_LABELS", [])
+                for idx_f, b64_str in enumerate(item["_TODAS_FOTOS_BASE64"]):
+                    try:
+                        b = base64.b64decode(b64_str)
+                        lbl = lbls[idx_f] if idx_f < len(lbls) else f"Foto {idx_f+1}"
+                        todas_fotos.append((b, lbl))
+                    except Exception:
+                        pass
+                if todas_fotos:
+                    return todas_fotos
+            if item.get("_FOTO_BASE64"):
+                try:
+                    return [(base64.b64decode(item["_FOTO_BASE64"]), "Foto")]
+                except Exception:
+                    pass
+
+    return todas_fotos
+
 # 5. send_result_with_txt enviando direto no PV e com botão de abrir no PV no grupo
 async def custom_send_result_with_txt(update, text, title, user_id, report_url=None, raw_data=None, query_value=None, context=None):
     if not text:
@@ -169,18 +232,16 @@ async def custom_send_result_with_txt(update, text, title, user_id, report_url=N
     is_private = (getattr(update.effective_chat, "type", "") == "private") if update.effective_chat else True
     bot_instance = context.bot if context else update.get_bot()
 
-    todas_fotos = []
-    if isinstance(raw_data, dict):
-        for item in raw_data.values():
-            if isinstance(item, dict) and item.get("_TODAS_FOTOS_BYTES"):
-                lbls = item.get("_TODAS_FOTOS_LABELS", [])
-                for idx_f, fb in enumerate(item["_TODAS_FOTOS_BYTES"]):
-                    lbl = lbls[idx_f] if idx_f < len(lbls) else f"Foto {idx_f+1}"
-                    todas_fotos.append((fb, lbl))
-                break
-            elif isinstance(item, dict) and item.get("_FOTO_BYTES"):
-                todas_fotos = [(item["_FOTO_BYTES"], "Foto")]
-                break
+    todas_fotos = extract_photos_from_raw_data(raw_data)
+    if not todas_fotos and query_value:
+        cpf_clean = re.sub(r"\D", "", str(query_value))
+        if len(cpf_clean) == 11:
+            try:
+                fl, _ = await custom_buscar_todas_fotos_unificada(cpf_clean)
+                if fl:
+                    todas_fotos = fl
+            except Exception:
+                pass
 
     foto_bytes = todas_fotos[0][0] if todas_fotos else None
 
@@ -355,18 +416,7 @@ async def custom_button_handler(update, context):
 
         try:
             # Fotos
-            todas_fotos = []
-            if isinstance(raw_data, dict):
-                for item in raw_data.values():
-                    if isinstance(item, dict) and item.get("_TODAS_FOTOS_BYTES"):
-                        lbls = item.get("_TODAS_FOTOS_LABELS", [])
-                        for idx_f, fb in enumerate(item["_TODAS_FOTOS_BYTES"]):
-                            lbl = lbls[idx_f] if idx_f < len(lbls) else f"Foto {idx_f+1}"
-                            todas_fotos.append((fb, lbl))
-                        break
-                    elif isinstance(item, dict) and item.get("_FOTO_BYTES"):
-                        todas_fotos = [(item["_FOTO_BYTES"], "Foto")]
-                        break
+            todas_fotos = extract_photos_from_raw_data(raw_data)
 
             if len(todas_fotos) == 1:
                 msg_p = await context.bot.send_photo(
@@ -514,6 +564,97 @@ async def custom_buscar_foto_unificada(cpf):
         return fotos[0][0], info
     return None, info
 
+orig_merge_cpf_local = mod.merge_cpf_local
+
+async def custom_merge_cpf_local(cpf):
+    cpf_clean = re.sub(r"\D", "", str(cpf or ""))
+    m_task = asyncio.create_task(orig_merge_cpf_local(cpf_clean))
+    foto_task = asyncio.create_task(custom_buscar_todas_fotos_unificada(cpf_clean))
+
+    try:
+        merged, (fotos_list, _) = await asyncio.gather(m_task, foto_task)
+    except Exception as e:
+        mod.logger.error(f"Erro em custom_merge_cpf_local: {e}")
+        merged = {}
+        fotos_list = []
+
+    if not isinstance(merged, dict):
+        merged = {}
+
+    if fotos_list:
+        merged["_FOTO_BYTES"] = fotos_list[0][0]
+        merged["_TODAS_FOTOS_BYTES"] = [f[0] for f in fotos_list]
+        merged["_TODAS_FOTOS_LABELS"] = [f[1] for f in fotos_list]
+        try:
+            merged["_FOTO_BASE64"] = base64.b64encode(fotos_list[0][0]).decode("ascii")
+            merged["_TODAS_FOTOS_BASE64"] = [base64.b64encode(f[0]).decode("ascii") for f in fotos_list]
+        except Exception:
+            pass
+
+    return merged
+
+async def custom_cmd_foto(update, context):
+    user_id = update.effective_user.id if update.effective_user else None
+    if not user_id:
+        return
+    if not await mod.check_access_and_chat(update, context, user_id=user_id):
+        return
+
+    text = update.message.text if update.message and update.message.text else ""
+    parts = text.split()
+    if len(parts) < 2:
+        mod.user_states[user_id] = "btn_foto"
+        msg = await mod.send_chat_msg(context, update, mod.wrap_quote("Digite o CPF para buscar FOTO:"), parse_mode="HTML")
+        mod.auto_delete(msg, delay=60)
+        return
+
+    cpf_raw = parts[1].strip()
+    cpf = re.sub(r"\D", "", cpf_raw)
+    if len(cpf) != 11:
+        msg = await mod.send_chat_msg(context, update, mod.wrap_quote("⚠️ CPF inválido. Digite um CPF válido com até 11 dígitos."), parse_mode="HTML")
+        mod.auto_delete(msg, delay=15)
+        return
+
+    msg_wait = await mod.send_loading_message(context, update=update, text="🔍 Buscando foto... aguarde.")
+
+    try:
+        fotos_list, dados = await asyncio.wait_for(custom_buscar_todas_fotos_unificada(cpf), timeout=35)
+        if not fotos_list:
+            msg = await mod.send_chat_msg(context, update, mod.wrap_quote("📌 <b>FOTO</b>: nenhuma foto encontrada para este CPF."), parse_mode="HTML")
+            mod.auto_delete(msg, delay=15)
+            await mod.delete_msg(msg_wait)
+            return
+
+        title_f = f"CONSULTA FOTO ({len(fotos_list)} FOTO(S) ENCONTRADA(S))" if len(fotos_list) > 1 else "CONSULTA FOTO"
+        texto_info = mod.format_pmse_data(dados) if dados else f"CPF: {cpf}"
+
+        raw_data = {
+            "resultado": texto_info,
+            "_TODAS_FOTOS_BYTES": [f[0] for f in fotos_list],
+            "_TODAS_FOTOS_LABELS": [f[1] for f in fotos_list],
+            "_FOTO_BYTES": fotos_list[0][0]
+        }
+        try:
+            raw_data["_FOTO_BASE64"] = base64.b64encode(fotos_list[0][0]).decode("ascii")
+            raw_data["_TODAS_FOTOS_BASE64"] = [base64.b64encode(f[0]).decode("ascii") for f in fotos_list]
+        except Exception:
+            pass
+
+        await custom_send_result_with_txt(
+            update, texto_info, title_f, user_id,
+            raw_data=raw_data, query_value=cpf, context=context
+        )
+        await mod.delete_msg(msg_wait)
+    except asyncio.TimeoutError:
+        msg = await mod.send_chat_msg(context, update, mod.wrap_quote("⏰ Consulta excedeu o tempo limite."), parse_mode="HTML")
+        mod.auto_delete(msg, delay=15)
+        await mod.delete_msg(msg_wait)
+    except Exception as e:
+        mod.logger.error(f"Erro no cmd_foto: {e}")
+        msg = await mod.send_chat_msg(context, update, mod.wrap_quote(f"❌ Erro ao buscar foto: {mod.sanitize_error_msg(str(e))}"), parse_mode="HTML")
+        mod.auto_delete(msg, delay=15)
+        await mod.delete_msg(msg_wait)
+
 # 7. Aplica overrides no bot
 mod.get_delete_markup = custom_get_delete_markup
 mod.send_result_with_txt = custom_send_result_with_txt
@@ -521,6 +662,8 @@ mod.button_handler = custom_button_handler
 mod.post_init = custom_post_init
 mod.buscar_todas_fotos_unificada = custom_buscar_todas_fotos_unificada
 mod.buscar_foto_unificada = custom_buscar_foto_unificada
+mod.merge_cpf_local = custom_merge_cpf_local
+mod.cmd_foto = custom_cmd_foto
 
 if __name__ == '__main__':
     mod.main()
