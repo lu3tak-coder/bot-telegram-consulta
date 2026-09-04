@@ -233,15 +233,6 @@ async def custom_send_result_with_txt(update, text, title, user_id, report_url=N
     bot_instance = context.bot if context else update.get_bot()
 
     todas_fotos = extract_photos_from_raw_data(raw_data)
-    if not todas_fotos and query_value:
-        cpf_clean = re.sub(r"\D", "", str(query_value))
-        if len(cpf_clean) == 11:
-            try:
-                fl, _ = await custom_buscar_todas_fotos_unificada(cpf_clean)
-                if fl:
-                    todas_fotos = fl
-            except Exception:
-                pass
 
     foto_bytes = todas_fotos[0][0] if todas_fotos else None
 
@@ -336,10 +327,9 @@ async def custom_send_result_with_txt(update, text, title, user_id, report_url=N
         sent_ok = False
         if foto_bytes:
             try:
-                foto_banner = mod.add_spoiler_click_banner(foto_bytes)
                 msg = await bot_instance.send_photo(
                     chat_id=chat_id,
-                    photo=BytesIO(foto_banner),
+                    photo=BytesIO(foto_bytes),
                     caption=receipt_text,
                     parse_mode="HTML",
                     reply_markup=markup_grp,
@@ -568,30 +558,13 @@ orig_merge_cpf_local = mod.merge_cpf_local
 
 async def custom_merge_cpf_local(cpf):
     cpf_clean = re.sub(r"\D", "", str(cpf or ""))
-    m_task = asyncio.create_task(orig_merge_cpf_local(cpf_clean))
-    foto_task = asyncio.create_task(custom_buscar_todas_fotos_unificada(cpf_clean))
-
     try:
-        merged, (fotos_list, _) = await asyncio.gather(m_task, foto_task)
+        merged = await orig_merge_cpf_local(cpf_clean)
     except Exception as e:
         mod.logger.error(f"Erro em custom_merge_cpf_local: {e}")
-        merged = {}
-        fotos_list = []
+        return {}
 
-    if not isinstance(merged, dict):
-        merged = {}
-
-    if fotos_list:
-        merged["_FOTO_BYTES"] = fotos_list[0][0]
-        merged["_TODAS_FOTOS_BYTES"] = [f[0] for f in fotos_list]
-        merged["_TODAS_FOTOS_LABELS"] = [f[1] for f in fotos_list]
-        try:
-            merged["_FOTO_BASE64"] = base64.b64encode(fotos_list[0][0]).decode("ascii")
-            merged["_TODAS_FOTOS_BASE64"] = [base64.b64encode(f[0]).decode("ascii") for f in fotos_list]
-        except Exception:
-            pass
-
-    return merged
+    return merged if isinstance(merged, dict) else {}
 
 async def custom_check_access_and_chat(update, context, user_id=None):
     # Permite consultas em qualquer chat (privado ou grupo)
@@ -623,7 +596,15 @@ async def custom_cmd_foto(update, context):
             mod.auto_delete(msg, delay=15)
         return
 
-    msg_wait = await mod.send_loading_message(context, update=update, text="🔍 Buscando foto... aguarde.")
+    user = update.effective_user
+    uname_tag = f"@{user.username}" if user and user.username else getattr(user, "full_name", "") or str(user_id)
+    msg_wait = await mod.send_loading_message(
+        context,
+        update.effective_chat.id,
+        uname_tag,
+        update=update,
+        text=f"🔍 {uname_tag} Buscando foto... aguarde."
+    )
 
     try:
         fotos_list, dados = await asyncio.wait_for(custom_buscar_todas_fotos_unificada(cpf), timeout=35)
